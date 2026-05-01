@@ -21,9 +21,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the bot server
 COPY server.py .
 
-# CLAUDE.md is mounted at runtime (see docker-compose.yml)
+# Create a non-root user (Claude CLI refuses --dangerously-skip-permissions as root)
+RUN useradd -m -u 1000 botuser \
+    && mkdir -p /app/data /home/botuser/.claude \
+    && chown -R botuser:botuser /app /home/botuser/.claude
 
-# Data directory for session persistence
-RUN mkdir -p /app/data
+USER botuser
+
+# CLAUDE.md is mounted at runtime (see docker-compose.yml)
 
 CMD ["python3", "-u", "server.py"]

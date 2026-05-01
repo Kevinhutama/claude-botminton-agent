@@ -13,7 +13,7 @@ services:
       # Persist Telegram→Claude session ID mapping across restarts
       - bot-sessions:/app/data
       # Persist Claude's own conversation history across restarts
-      - claude-home:/root/.claude
+      - claude-home:/home/botuser/.claude
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
