@@ -104,7 +104,21 @@ All subsequent commands must also be run inside `dev shell`.
 
 ---
 
-## Step 4: Build and Start Services
+## Step 4: Start the GrabGPT Proxy (Grab Engineers Only)
+
+The bot uses Claude via GrabGPT. You must run the local proxy on port 9898 **before** starting Docker:
+
+```bash
+PORT=9898 CHUNK_EAGER=0 CHUNK_MAX_WAIT_MS=500 \
+  UPSTREAM_ORIGIN="https://public-api.grabgpt.managed.catwalk-k8s.stg-myteksi.com" \
+  npx -y git+https://oauth2:<token>@gitlab.myteksi.net/design/cc-grabgpt-proxy.git
+```
+
+Keep this running in a separate terminal. The Docker container connects to it via `host.docker.internal:9898`.
+
+---
+
+## Step 5: Build and Start Services
 
 ```bash
 cd ~/Workspace/botminton/claude-botminton-agent
@@ -116,11 +130,12 @@ First build takes ~5 minutes (installs Node.js, Claude CLI, Python deps).
 Verify both containers are running:
 ```bash
 docker compose ps
+docker logs claude-botminton-bot -f
 ```
 
 ---
 
-## Step 5: Authenticate Your Personal Telegram Account
+## Step 6: Authenticate Your Personal Telegram Account
 
 The Telethon sidecar needs a one-time login to read the badminton group.
 
@@ -155,7 +170,7 @@ The session is persisted in a Docker volume — no need to re-authenticate after
 
 ---
 
-## Step 6: Connect Google Calendar (Optional)
+## Step 7: Connect Google Calendar (Optional)
 
 Lets Claude add confirmed badminton games directly to your Google Calendar.
 
@@ -184,7 +199,7 @@ Open the `auth_url` in your browser → authorize → Google redirects back to
 
 ---
 
-## Step 7: Start Using It!
+## Step 8: Start Using It!
 
 Message your Telegram bot:
 
@@ -211,26 +226,64 @@ docker compose up -d
 
 ## Useful Commands
 
+### Logs
+
 ```bash
-# View logs
-docker compose logs -f                      # All services
-docker compose logs -f claude-botminton-bot # Just bot-server
-docker compose logs -f claude-botminton-telethon # Just sidecar
+# Tail all logs (most useful for debugging)
+docker logs claude-botminton-bot -f
+
+# Tail just the telethon sidecar
+docker logs claude-botminton-telethon -f
+
+# Via docker compose (equivalent)
+docker compose logs -f
+docker compose logs -f claude-botminton-bot
+docker compose logs -f claude-botminton-telethon
+```
+
+### Service Management
+
+```bash
+# Check running containers
+docker compose ps
 
 # Restart after CLAUDE.md changes (no rebuild needed)
 docker compose restart claude-botminton-bot
 
-# Rebuild after code changes
-docker compose build && docker compose up -d
+# Rebuild after server.py / Dockerfile changes
+docker compose build bot-server && docker compose up -d bot-server
 
-# Reset Claude session for your chat (start fresh conversation)
-# Delete the session entry from the sessions volume:
-docker compose exec claude-botminton-bot python3 -c "
-import json; d=json.load(open('/app/data/sessions.json'))
-print('Sessions:', list(d.keys()))
+# Force recreate with latest env vars
+docker compose up -d --force-recreate bot-server
+```
+
+### Claude CLI (inside container)
+
+```bash
+# Enter the container
+docker exec -it -u botuser claude-botminton-bot /bin/bash
+
+# Test Claude CLI directly
+claude --print --dangerously-skip-permissions --no-session-persistence "Say hello"
+
+# Check Claude version
+claude --version
+```
+
+### Reset Claude Conversation
+
+```bash
+# Clear conversation history for all chats (start fresh)
+docker exec claude-botminton-bot python3 -c "
+import pathlib
+pathlib.Path('/app/data/sessions.json').write_text('{}')
+print('Sessions cleared')
 "
+```
 
-# Sidecar API (direct access for debugging)
+### Sidecar API
+
+```bash
 curl -s http://localhost:8081/health | python3 -m json.tool
 curl -s "http://localhost:8081/messages?group=sgbadmintontelecom&limit=5" | python3 -m json.tool
 curl -s http://localhost:8081/groups | python3 -m json.tool
