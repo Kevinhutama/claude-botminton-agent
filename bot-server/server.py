@@ -60,7 +60,7 @@ def run_claude(message: str, session_id: str | None) -> tuple[str, str | None]:
     ]
     if session_id:
         cmd.extend(["--resume", session_id])
-    cmd.extend(["--message", message])
+    cmd.append(message)
 
     logger.info("Running claude: %s (session=%s)", " ".join(cmd[:5] + ["..."]), session_id)
 
