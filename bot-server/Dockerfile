@@ -14,8 +14,8 @@ RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
-# Install su-exec for clean privilege dropping in entrypoint
-RUN apt-get update && apt-get install -y su-exec && apt-get clean && rm -rf /var/lib/apt/lists/*
+# Install gosu for clean privilege dropping in entrypoint
+RUN apt-get update && apt-get install -y gosu && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
