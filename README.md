@@ -126,7 +126,9 @@ The Telethon sidecar needs a one-time login to read the badminton group.
 
 ### Send login code to your phone
 ```bash
-curl -X POST http://localhost:8081/auth/send-code
+curl -X POST http://localhost:8081/auth/send-code \
+  -H "Content-Type: application/json" \
+  -d '{}'
 ```
 
 ### Enter the code you received in Telegram
