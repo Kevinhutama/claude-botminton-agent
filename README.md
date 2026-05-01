@@ -137,34 +137,17 @@ docker logs claude-botminton-bot -f
 
 ## Step 6: Authenticate Your Personal Telegram Account
 
-The Telethon sidecar needs a one-time login to read the badminton group.
+The Telethon sidecar needs a one-time login to read the badminton group. Just run:
 
-### Send login code to your phone
 ```bash
-curl -X POST http://localhost:8081/auth/send-code \
-  -H "Content-Type: application/json" \
-  -d '{}'
+./auth.sh
 ```
 
-### Enter the code you received in Telegram
-```bash
-curl -X POST http://localhost:8081/auth/verify-code \
-  -H "Content-Type: application/json" \
-  -d '{"code": "12345"}'
-```
-
-### If you have 2FA enabled
-```bash
-curl -X POST http://localhost:8081/auth/verify-2fa \
-  -H "Content-Type: application/json" \
-  -d '{"password": "your_2fa_password"}'
-```
-
-### Verify
-```bash
-curl -s http://localhost:8081/health
-# Expected: {"status": "ok", "connected": true, "authorized": true}
-```
+The script will:
+1. Send an OTP to your Telegram account
+2. Prompt you to enter the code
+3. Handle 2FA if enabled
+4. Confirm authentication with a health check
 
 The session is persisted in a Docker volume — no need to re-authenticate after restarts.
 
