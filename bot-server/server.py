@@ -49,7 +49,7 @@ def save_sessions(sessions: dict) -> None:
 
 def run_claude(message: str, has_prior_session: bool) -> str:
     """
-    Invoke the Claude CLI in print mode.
+    Invoke the Claude CLI in print mode via stdin.
     Uses --continue for follow-up messages to resume the last session.
     Returns the plain-text response.
     """
@@ -60,12 +60,13 @@ def run_claude(message: str, has_prior_session: bool) -> str:
     ]
     if has_prior_session:
         cmd.append("--continue")
-    cmd.append(message)
 
     logger.info("Running claude (continue=%s): %s", has_prior_session, message[:80])
+    logger.info("Full command: %s", " ".join(cmd))
 
     result = subprocess.run(
         cmd,
+        input=message,           # pass message via stdin
         capture_output=True,
         text=True,
         cwd=CLAUDE_WORKDIR,
@@ -76,16 +77,21 @@ def run_claude(message: str, has_prior_session: bool) -> str:
     stdout = result.stdout.strip()
     stderr = result.stderr.strip()
 
+    logger.info("Claude exit code: %d", result.returncode)
+    logger.info("Claude stdout (%d chars): %s", len(stdout), stdout[:300])
     if stderr:
-        logger.info("Claude stderr: %s", stderr[:500])
+        logger.info("Claude stderr (%d chars): %s", len(stderr), stderr[:500])
 
     if result.returncode != 0:
-        logger.error("Claude CLI error (exit %d): %s", result.returncode, stderr)
-        raise RuntimeError(f"Claude CLI failed: {stderr or 'unknown error'}")
+        raise RuntimeError(f"Claude CLI failed: {stderr or stdout or 'unknown error'}")
+
+    # If stdout is empty but stderr has content, the CLI may write to stderr
+    if not stdout and stderr:
+        logger.warning("stdout empty, using stderr as response")
+        return stderr
 
     if not stdout:
-        logger.error("Claude returned empty stdout. stderr: %s", stderr)
-        raise RuntimeError("Claude CLI returned empty output")
+        raise RuntimeError(f"Claude CLI returned empty output. stderr: {stderr}")
 
     return stdout
 
