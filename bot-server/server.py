@@ -2,13 +2,14 @@
 Claude Botminton Agent - Telegram Bot Server
 
 Listens for Telegram messages and routes them to a Claude CLI session.
-Each Telegram chat gets its own persistent Claude session (resumed via session_id).
+Conversation history is maintained per chat_id and injected into each prompt.
 """
 
 import asyncio
-import json  # still used for sessions.json
+import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
 SESSIONS_FILE = "/app/data/sessions.json"
 CLAUDE_WORKDIR = "/app"
 MAX_TG_MESSAGE_LENGTH = 4096
+MAX_HISTORY_TURNS = 10  # number of past exchanges to include in context
 
 
 def load_sessions() -> dict:
@@ -47,63 +49,90 @@ def save_sessions(sessions: dict) -> None:
     path.write_text(json.dumps(sessions, indent=2))
 
 
-def run_claude(message: str, has_prior_session: bool) -> str:
+def build_prompt(message: str, history: list) -> str:
+    """Build a full prompt including conversation history."""
+    parts = []
+    if history:
+        parts.append("Previous conversation:")
+        for turn in history[-MAX_HISTORY_TURNS:]:
+            parts.append(f"User: {turn['user']}")
+            parts.append(f"Assistant: {turn['assistant']}")
+        parts.append("")
+    parts.append(f"User: {message}")
+    return "\n".join(parts)
+
+
+def run_claude(prompt: str) -> str:
     """
-    Invoke the Claude CLI in print mode via stdin.
-    Uses --continue for follow-up messages to resume the last session.
-    Returns the plain-text response.
+    Invoke the Claude CLI using the same pattern as the working bolt app.
+    Prompt is passed as a positional argument with HOME set explicitly.
     """
+    claude_path = shutil.which("claude")
+    if not claude_path:
+        raise RuntimeError("claude CLI not found in PATH")
+
     cmd = [
-        "claude",
+        claude_path,
         "--print",
         "--dangerously-skip-permissions",
+        "--no-session-persistence",
+        "--verbose",
+        prompt,
     ]
-    if has_prior_session:
-        cmd.append("--continue")
 
-    logger.info("Running claude (continue=%s): %s", has_prior_session, message[:80])
-    logger.info("Full command: %s", " ".join(cmd))
+    env = {
+        **os.environ,
+        "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
+        "HOME": str(Path.home()),
+    }
 
-    result = subprocess.run(
+    logger.info("Running claude (prompt length: %d chars)", len(prompt))
+    logger.info("Claude path: %s | CWD: %s", claude_path, CLAUDE_WORKDIR)
+
+    process = subprocess.Popen(
         cmd,
-        input=message,           # pass message via stdin
-        capture_output=True,
-        text=True,
         cwd=CLAUDE_WORKDIR,
-        env={**os.environ, "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY},
-        timeout=300,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
     )
 
-    stdout = result.stdout.strip()
-    stderr = result.stderr.strip()
+    stdout_lines = []
+    if process.stdout:
+        for line in process.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+            stdout_lines.append(line)
 
-    logger.info("Claude exit code: %d", result.returncode)
-    logger.info("Claude stdout (%d chars): %s", len(stdout), stdout[:300])
-    if stderr:
-        logger.info("Claude stderr (%d chars): %s", len(stderr), stderr[:500])
+    process.wait(timeout=300)
 
-    if result.returncode != 0:
-        raise RuntimeError(f"Claude CLI failed: {stderr or stdout or 'unknown error'}")
+    stderr_output = ""
+    if process.stderr:
+        stderr_output = process.stderr.read()
+        if stderr_output:
+            logger.info("Claude stderr: %s", stderr_output[:500])
 
-    # If stdout is empty but stderr has content, the CLI may write to stderr
-    if not stdout and stderr:
-        logger.warning("stdout empty, using stderr as response")
-        return stderr
+    logger.info("Claude exit code: %d", process.returncode)
 
-    if not stdout:
-        raise RuntimeError(f"Claude CLI returned empty output. stderr: {stderr}")
+    if process.returncode != 0:
+        raise RuntimeError(f"Claude CLI failed: {stderr_output or 'unknown error'}")
 
-    return stdout
+    response = "".join(stdout_lines).strip()
+    logger.info("Claude response length: %d chars", len(response))
+
+    if not response:
+        raise RuntimeError(f"Claude CLI returned empty output. stderr: {stderr_output}")
+
+    return response
 
 
 def split_message(text: str) -> list[str]:
     """Split a long message into Telegram-safe chunks."""
     if len(text) <= MAX_TG_MESSAGE_LENGTH:
         return [text]
-
     parts = []
     while len(text) > MAX_TG_MESSAGE_LENGTH:
-        # Try to split at a newline boundary
         split_at = text.rfind("\n", 0, MAX_TG_MESSAGE_LENGTH)
         if split_at == -1:
             split_at = MAX_TG_MESSAGE_LENGTH
@@ -126,13 +155,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action(ChatAction.TYPING)
 
     sessions = load_sessions()
-    has_prior_session = sessions.get(chat_id, False)
+    history = sessions.get(chat_id, [])
+    prompt = build_prompt(user_text, history)
 
     try:
         loop = asyncio.get_running_loop()
-        response_text = await loop.run_in_executor(
-            None, run_claude, user_text, has_prior_session
-        )
+        response_text = await loop.run_in_executor(None, run_claude, prompt)
     except RuntimeError as e:
         logger.error("Claude error: %s", e)
         await update.message.reply_text(
@@ -146,7 +174,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    sessions[chat_id] = True
+    # Persist conversation turn
+    history.append({"user": user_text, "assistant": response_text})
+    sessions[chat_id] = history[-MAX_HISTORY_TURNS:]
     save_sessions(sessions)
 
     for chunk in split_message(response_text):
@@ -157,11 +187,13 @@ def main() -> None:
     logger.info("Starting Claude Botminton Agent...")
     Path("/app/data").mkdir(parents=True, exist_ok=True)
 
+    claude_path = shutil.which("claude")
+    logger.info("Claude CLI path: %s", claude_path)
+
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is polling for messages...")
-    # run_polling manages its own event loop — do NOT wrap in asyncio.run()
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
