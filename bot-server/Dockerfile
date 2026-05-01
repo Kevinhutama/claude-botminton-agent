@@ -14,20 +14,24 @@ RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app
 
+# Install su-exec for clean privilege dropping in entrypoint
+RUN apt-get update && apt-get install -y su-exec && apt-get clean && rm -rf /var/lib/apt/lists/*
+
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the bot server
+# Copy the bot server and entrypoint
 COPY server.py .
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 # Create a non-root user (Claude CLI refuses --dangerously-skip-permissions as root)
 RUN useradd -m -u 1000 botuser \
     && mkdir -p /app/data /home/botuser/.claude \
-    && chown -R botuser:botuser /app /home/botuser/.claude
-
-USER botuser
+    && chown -R botuser:botuser /app /home/botuser
 
 # CLAUDE.md is mounted at runtime (see docker-compose.yml)
+# Entrypoint runs as root to fix volume permissions, then drops to botuser
 
-CMD ["python3", "-u", "server.py"]
+ENTRYPOINT ["/entrypoint.sh"]
