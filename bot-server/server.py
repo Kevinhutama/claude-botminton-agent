@@ -122,15 +122,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info("Message from chat_id=%s: %s", chat_id, user_text[:80])
 
-    # Show typing indicator
     await update.message.chat.send_action(ChatAction.TYPING)
 
     sessions = load_sessions()
     session_id = sessions.get(chat_id)
 
     try:
-        # Keep sending typing while Claude works (runs in background)
-        response_text, new_session_id = await asyncio.get_event_loop().run_in_executor(
+        loop = asyncio.get_running_loop()
+        response_text, new_session_id = await loop.run_in_executor(
             None, run_claude, user_text, session_id
         )
     except RuntimeError as e:
@@ -146,27 +145,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    # Persist new session ID
     if new_session_id:
         sessions[chat_id] = new_session_id
         save_sessions(sessions)
 
-    # Send response (split if needed)
     for chunk in split_message(response_text):
         await update.message.reply_text(chunk, parse_mode="Markdown")
 
 
-async def main() -> None:
+def main() -> None:
     logger.info("Starting Claude Botminton Agent...")
-
     Path("/app/data").mkdir(parents=True, exist_ok=True)
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is polling for messages...")
-    await app.run_polling(allowed_updates=Update.ALL_TYPES)
+    # run_polling manages its own event loop — do NOT wrap in asyncio.run()
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
