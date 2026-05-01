@@ -6,7 +6,7 @@ Each Telegram chat gets its own persistent Claude session (resumed via session_i
 """
 
 import asyncio
-import json
+import json  # still used for sessions.json
 import logging
 import os
 import subprocess
@@ -47,22 +47,22 @@ def save_sessions(sessions: dict) -> None:
     path.write_text(json.dumps(sessions, indent=2))
 
 
-def run_claude(message: str, session_id: str | None) -> tuple[str, str | None]:
+def run_claude(message: str, has_prior_session: bool) -> str:
     """
     Invoke the Claude CLI in print mode.
-    Returns (response_text, new_session_id).
+    Uses --continue for follow-up messages to resume the last session.
+    Returns the plain-text response.
     """
     cmd = [
         "claude",
         "--print",
-        "--output-format", "json",
         "--dangerously-skip-permissions",
     ]
-    if session_id:
-        cmd.extend(["--resume", session_id])
+    if has_prior_session:
+        cmd.append("--continue")
     cmd.append(message)
 
-    logger.info("Running claude: %s (session=%s)", " ".join(cmd[:5] + ["..."]), session_id)
+    logger.info("Running claude (continue=%s): %s", has_prior_session, message[:80])
 
     result = subprocess.run(
         cmd,
@@ -73,26 +73,21 @@ def run_claude(message: str, session_id: str | None) -> tuple[str, str | None]:
         timeout=300,
     )
 
+    stdout = result.stdout.strip()
+    stderr = result.stderr.strip()
+
+    if stderr:
+        logger.info("Claude stderr: %s", stderr[:500])
+
     if result.returncode != 0:
-        stderr = result.stderr.strip()
         logger.error("Claude CLI error (exit %d): %s", result.returncode, stderr)
         raise RuntimeError(f"Claude CLI failed: {stderr or 'unknown error'}")
 
-    stdout = result.stdout.strip()
     if not stdout:
+        logger.error("Claude returned empty stdout. stderr: %s", stderr)
         raise RuntimeError("Claude CLI returned empty output")
 
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        # Claude may occasionally output plain text — return as-is
-        logger.warning("Claude output was not JSON, returning raw text")
-        return stdout, session_id
-
-    response_text = data.get("result", "")
-    new_session_id = data.get("session_id") or session_id
-
-    return response_text, new_session_id
+    return stdout
 
 
 def split_message(text: str) -> list[str]:
@@ -125,12 +120,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.chat.send_action(ChatAction.TYPING)
 
     sessions = load_sessions()
-    session_id = sessions.get(chat_id)
+    has_prior_session = sessions.get(chat_id, False)
 
     try:
         loop = asyncio.get_running_loop()
-        response_text, new_session_id = await loop.run_in_executor(
-            None, run_claude, user_text, session_id
+        response_text = await loop.run_in_executor(
+            None, run_claude, user_text, has_prior_session
         )
     except RuntimeError as e:
         logger.error("Claude error: %s", e)
@@ -145,9 +140,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
 
-    if new_session_id:
-        sessions[chat_id] = new_session_id
-        save_sessions(sessions)
+    sessions[chat_id] = True
+    save_sessions(sessions)
 
     for chunk in split_message(response_text):
         await update.message.reply_text(chunk, parse_mode="Markdown")
