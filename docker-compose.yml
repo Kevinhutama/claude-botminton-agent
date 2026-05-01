@@ -12,6 +12,8 @@ services:
       - ./CLAUDE.md:/app/CLAUDE.md:ro
       # Persist Telegram→Claude session ID mapping across restarts
       - bot-sessions:/app/data
+      # Mount host Claude config (auth token) into the container
+      - ${HOME}/.claude.json:/home/botuser/.claude.json:ro
       # Persist Claude's own conversation history across restarts
       - claude-home:/home/botuser/.claude
     environment:
