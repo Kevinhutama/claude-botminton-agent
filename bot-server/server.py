@@ -195,6 +195,41 @@ def get_primary_chat_id() -> str | None:
     return list(sessions.keys())[-1]
 
 
+def analyze_host_reply(msg: dict) -> str:
+    """
+    Run an incoming host DM reply through Claude.
+    Claude will detect if the slot is confirmed, check for PayNow info,
+    and ask the host for payment details if missing.
+    """
+    sender = msg.get("sender_username") or msg.get("sender_id") or "unknown"
+    sender_display = f"@{msg['sender_username']}" if msg.get("sender_username") else msg.get("sender", "the host")
+    text = msg.get("text", "")
+
+    prompt = f"""A badminton host just replied to a DM you sent on Kevin's behalf.
+
+Host: {sender_display}
+Their reply: "{text}"
+
+Please analyze this reply and take appropriate action:
+
+1. If they are CONFIRMING the slot is available:
+   - Check if they provided payment info (PayNow number, PayLah, bank transfer, etc.)
+   - If payment info IS provided: summarize the booking details for Kevin and tell him what to pay and to whom
+   - If payment info is NOT provided: send them a follow-up DM asking for their PayNow number using:
+     curl -s -X POST http://telethon-sidecar:8081/dm \\
+       -H "Content-Type: application/json" \\
+       -d '{{"user": "{sender}", "text": "Great! What\\'s your PayNow number?"}}'
+     Then tell Kevin you've asked for the payment details.
+
+2. If they say it's FULL or they can't accommodate: tell Kevin the session is full and ask if he wants to check other games.
+
+3. If the reply is UNCLEAR or a question back: forward the message to Kevin and ask how he'd like to respond.
+
+Keep your response concise and friendly."""
+
+    return run_claude(prompt)
+
+
 async def poll_incoming_dms(app: Application) -> None:
     """Background task: check for new incoming DMs every DM_POLL_INTERVAL seconds."""
     logger.info("Starting incoming DM polling every %ds", DM_POLL_INTERVAL)
@@ -214,18 +249,28 @@ async def poll_incoming_dms(app: Application) -> None:
                             if chat_id:
                                 for msg in messages:
                                     sender = msg.get("sender_username") or msg.get("sender") or "Unknown"
-                                    text = msg.get("text", "")
-                                    notification = (
-                                        f"📩 *Reply from @{sender}:*\n\n{text}"
-                                        if msg.get("sender_username")
-                                        else f"📩 *Reply from {sender}:*\n\n{text}"
-                                    )
-                                    await app.bot.send_message(
-                                        chat_id=chat_id,
-                                        text=notification,
-                                        parse_mode="Markdown",
-                                    )
-                                    logger.info("Forwarded DM reply from %s to chat %s", sender, chat_id)
+                                    logger.info("Analyzing host reply from %s", sender)
+                                    try:
+                                        loop = asyncio.get_running_loop()
+                                        response_text = await loop.run_in_executor(
+                                            None, analyze_host_reply, msg
+                                        )
+                                    except Exception as e:
+                                        logger.error("Claude analysis failed: %s", e)
+                                        # Fallback: just forward the raw message
+                                        response_text = (
+                                            f"📩 *Reply from @{sender}:*\n\n{msg.get('text', '')}"
+                                            if msg.get("sender_username")
+                                            else f"📩 *Reply from {sender}:*\n\n{msg.get('text', '')}"
+                                        )
+
+                                    for chunk in split_message(response_text):
+                                        await app.bot.send_message(
+                                            chat_id=chat_id,
+                                            text=chunk,
+                                            parse_mode="Markdown",
+                                        )
+                                    logger.info("Sent analysis of reply from %s to chat %s", sender, chat_id)
         except Exception as e:
             logger.debug("DM poll error (will retry): %s", e)
 

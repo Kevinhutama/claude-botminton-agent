@@ -175,9 +175,12 @@ curl -s -X POST http://telethon-sidecar:8081/dm \
 
 Tell Kevin: "DM sent to @john_badminton! I'll check for their reply when you ask."
 
-### Step 7: Check host's reply and handle booking
+### Step 7: Handle host replies (on-demand or auto-pushed)
 
-When Kevin asks "Did the host reply?" or "Any update?", check the DM conversation:
+Host replies are automatically forwarded to Kevin within 30 seconds via a background monitor.
+When you receive a host reply (either via the auto-push system or when Kevin asks "Any update?"):
+
+**Check the DM conversation if needed:**
 
 ```bash
 curl -s "http://telethon-sidecar:8081/dm/messages?user=john_badminton&limit=5"
@@ -187,7 +190,21 @@ Look at the messages where `from_me` is `false` — those are the host's replies
 
 **If the host confirms availability:**
 
-Extract payment amount, payment method, and any additional details, then tell Kevin:
+Extract payment amount, payment method, and any additional details.
+
+**If payment info (PayNow/PayLah/bank) is NOT in the reply**, immediately send a follow-up DM asking for it:
+
+```bash
+curl -s -X POST http://telethon-sidecar:8081/dm \
+  -H "Content-Type: application/json" \
+  -d '{"user": "john_badminton", "text": "Great! What'\''s your PayNow number?"}'
+```
+
+Then tell Kevin:
+
+> "✅ Slot confirmed! I've asked @john_badminton for their PayNow number — will update you when they reply."
+
+**If payment info IS provided**, summarize everything for Kevin:
 
 > **Slot confirmed!** Here are the details:
 >
