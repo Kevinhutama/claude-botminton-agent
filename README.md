@@ -2,9 +2,7 @@
 
 A personal badminton session finder bot powered by **Claude CLI** + **Telethon**.
 
-You message your Telegram bot → a Claude CLI session starts → Claude reads the SG Badminton
-Community group via your personal Telegram account → Claude finds slots, DMs hosts, and adds
-games to your Google Calendar.
+You message your Telegram bot → Claude finds available slots from the SG Badminton Community group → Claude DMs hosts on your behalf → you get notified automatically when they reply.
 
 ## Architecture
 
@@ -17,14 +15,14 @@ games to your Google Calendar.
 │  │                              │     │                                   │     │
 │  │  - Telegram Bot polling      │────▶│  - MTProto / personal login       │     │
 │  │  - Claude CLI subprocess     │     │  - Reads any group you're in      │     │
-│  │  - Session management        │◀────│  - REST API on :8081              │     │
-│  │  - CLAUDE.md agent context   │     │  - Sends DMs as you               │     │
+│  │  - Conversation history      │◀────│  - REST API on :8081              │     │
+│  │  - Incoming DM monitor       │     │  - Sends DMs as you               │     │
 │  └──────────────────────────────┘     └───────────────────────────────────┘     │
-│           ▲                                                                      │
-│           │ Bot API (polling)                                                    │
-└───────────┼──────────────────────────────────────────────────────────────────────┘
-            │
-       ┌────┴─────┐
+│           ▲                                    ▲                                 │
+│           │ Bot API (polling)                  │ Bedrock proxy                   │
+└───────────┼────────────────────────────────────┼─────────────────────────────────┘
+            │                          host.docker.internal:9898
+       ┌────┴─────┐                    (cc-grabgpt-proxy on Mac)
        │    You    │
        │ (Telegram)│
        └──────────┘
@@ -32,14 +30,10 @@ games to your Google Calendar.
 
 **How it works:**
 1. You message your Telegram bot
-2. `bot-server` receives the message and runs:
-   ```
-   claude --print --output-format json [--resume <session_id>] --message "<your message>"
-   ```
-3. Claude reads `CLAUDE.md` for instructions, calls `http://telethon-sidecar:8081` via curl (built-in Bash tool)
-4. Claude returns a structured JSON response
-5. `bot-server` sends the reply back to your Telegram and saves the session ID for continuity
-6. Your next message resumes the same Claude conversation
+2. `bot-server` runs `claude --print --dangerously-skip-permissions --no-session-persistence "<prompt>"` with full conversation history injected
+3. Claude reads `CLAUDE.md` for instructions, uses its Bash tool to `curl` the Telethon sidecar
+4. Claude finds slots, DMs hosts, checks replies, adds to calendar
+5. The bot also monitors for incoming DMs every 30s — when a host replies, Claude analyzes it and notifies you automatically (and asks for PayNow if not provided)
 
 ---
 
@@ -47,74 +41,51 @@ games to your Google Calendar.
 
 | Tool | How to get it |
 |------|--------------|
-| **Colima** (or Docker Desktop) | `brew install colima` |
+| **Colima** | `brew install colima` |
+| **Node.js** | `brew install node` (for npx) |
 | **Git** | `brew install git` |
-| **curl** | Pre-installed on macOS |
 
 ---
 
-## Step 1: Get Your Credentials
+## Setup (First Time Only)
 
-### 1A. Telegram Bot Token (from @BotFather)
+### Step 1: Get Your Credentials
 
+**1A. Telegram Bot Token**
 1. Open Telegram → search **@BotFather** → `/newbot`
-2. Follow the prompts, save the bot token (e.g., `7123456789:AAHxx...`)
+2. Save the bot token (e.g., `7123456789:AAHxx...`)
 
-### 1B. Telegram Personal API Credentials
-
+**1B. Telegram Personal API Credentials**
 1. Go to **https://my.telegram.org** → log in
 2. Click **"API development tools"** → Create application
 3. Save your `App api_id` and `App api_hash`
 
-### 1C. Anthropic API Key
-
-1. Go to **https://console.anthropic.com** → API Keys → Create Key
-2. Save the key (starts with `sk-ant-...`)
-
-> Note: Requires a pay-as-you-go Anthropic account. Claude Pro/Max subscription does NOT include API access.
+**1C. GrabGPT API Key & Proxy Token**
+- `ANTHROPIC_API_KEY`: your GrabGPT UUID token (from `~/.zshrc`)
+- `GRABGPT_PROXY_TOKEN`: your GitLab OAuth token for `cc-grabgpt-proxy`
 
 ---
 
-## Step 2: Configure Environment
+### Step 2: Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
-Fill in all values in `.env`:
+Fill in all values:
 
 ```bash
 TELEGRAM_BOT_TOKEN=7123456789:AAHxxxxxxxxxx
 TELEGRAM_API_ID=2XXXXXXX
 TELEGRAM_API_HASH=a1b2c3d4e5f6g7h8i9j0k1l2m3n4
 TELEGRAM_PHONE=+628123456789
-ANTHROPIC_API_KEY=sk-ant-xxxxx
+ANTHROPIC_API_KEY=your-grabgpt-uuid-token
+GRABGPT_PROXY_TOKEN=your-gitlab-oauth-token
 ```
 
 ---
 
-## Step 3: Start Colima
-
-```bash
-dev shell
-colima start --cpu 4 --memory 4 --disk 60
-```
-
-All subsequent commands must also be run inside `dev shell`.
-
----
-
-## Step 4: Add GrabGPT Proxy Token to `.env`
-
-Add your GitLab OAuth token to `.env` (used by `botminton-start` to run the proxy):
-
-```bash
-GRABGPT_PROXY_TOKEN=your-gitlab-oauth-token-here
-```
-
----
-
-## Step 5: Build Docker Images (first time only)
+### Step 3: Build Docker Images
 
 ```bash
 cd ~/Workspace/botminton/claude-botminton-agent
@@ -125,91 +96,87 @@ First build takes ~5 minutes (installs Node.js, Claude CLI, Python deps).
 
 ---
 
-## Step 5b: Start Everything
+### Step 4: Start the Bot
 
 ```bash
 ./botminton-start
 ```
 
-This single command:
+This single command handles everything:
 1. Checks Colima — starts it if not running (skips if already running)
 2. Starts the GrabGPT proxy on port 9898 (skips if already running)
-3. Starts all Docker services (`docker compose up -d`)
-
-Verify:
-```bash
-docker logs claude-botminton-bot -f
-```
+3. Runs `docker compose up -d`
 
 ---
 
-## Step 6: Authenticate Your Personal Telegram Account
+### Step 5: Authenticate Your Personal Telegram Account
 
-The Telethon sidecar needs a one-time login to read the badminton group. Just run:
+One-time login so the sidecar can read the badminton group and send DMs as you:
 
 ```bash
-./auth.sh
+./botminton-auth
 ```
 
-The script will:
-1. Send an OTP to your Telegram account
-2. Prompt you to enter the code
-3. Handle 2FA if enabled
-4. Confirm authentication with a health check
-
-The session is persisted in a Docker volume — no need to re-authenticate after restarts.
+The script sends an OTP to your phone, prompts for the code, handles 2FA, and confirms auth.
+The session is persisted in a Docker volume — **no need to re-authenticate after restarts**.
 
 ---
 
-## Step 7: Connect Google Calendar (Optional)
+### Step 6: Connect Google Calendar (Optional)
 
-Lets Claude add confirmed badminton games directly to your Google Calendar.
+Lets Claude add confirmed games directly to your Google Calendar.
 
-### 6A. Create OAuth Credentials
+**6A.** Go to **https://console.cloud.google.com** → enable **Google Calendar API** → create an OAuth 2.0 Client ID (Desktop app) → download the JSON
 
-1. Go to **https://console.cloud.google.com** → create/select project
-2. Enable **Google Calendar API** (APIs & Services → Library)
-3. OAuth consent screen: External, add your Gmail as test user
-4. Credentials → Create → OAuth 2.0 Client ID → Desktop app → Download JSON
-
-### 6B. Install Credentials
-
+**6B.** Copy credentials:
 ```bash
 cp ~/Downloads/client_secret_*.json ./gcal/credentials.json
 ```
 
-### 6C. Authorize
-
+**6C.** Authorize:
 ```bash
-# Get the auth URL
 curl -s http://localhost:8081/calendar/auth-url | python3 -m json.tool
 ```
-
-Open the `auth_url` in your browser → authorize → Google redirects back to
-`http://localhost:8081/calendar/callback` → you'll see a success message.
+Open the `auth_url` in your browser → authorize → done.
 
 ---
 
-## Step 8: Start Using It!
+### Step 7: Start Using It
 
 Message your Telegram bot:
 
-- *"Find available badminton slots this Saturday"*
-- *"Any HB-LI games this weekend near Clementi?"*
+- *"Find HB games this Saturday"*
+- *"Any LI-MI games this weekend near Clementi?"*
 - *"I want to join game #2"*
 - *"Did the host reply?"*
 - *"Add it to my calendar with Gaby"*
 
+Host replies are forwarded to you automatically within 30 seconds — no need to ask.
+
 ---
 
-## After Laptop Restart
+## Day-to-Day Usage
+
+### Start
 
 ```bash
 cd ~/Workspace/botminton/claude-botminton-agent
 ./botminton-start
 ```
 
-That's it — Colima, the GrabGPT proxy, and all Docker services start automatically.
+### Stop
+
+```bash
+./botminton-stop
+```
+
+Stops Docker services and the GrabGPT proxy. Colima is left running (other programs may use it).
+
+### Re-authenticate Telethon (if session expires)
+
+```bash
+./botminton-auth
+```
 
 ---
 
@@ -218,51 +185,28 @@ That's it — Colima, the GrabGPT proxy, and all Docker services start automatic
 ### Logs
 
 ```bash
-# Tail all logs (most useful for debugging)
-docker logs claude-botminton-bot -f
-
-# Tail just the telethon sidecar
-docker logs claude-botminton-telethon -f
-
-# Via docker compose (equivalent)
-docker compose logs -f
-docker compose logs -f claude-botminton-bot
-docker compose logs -f claude-botminton-telethon
+docker logs claude-botminton-bot -f         # Bot server (main)
+docker logs claude-botminton-telethon -f    # Telethon sidecar
 ```
 
 ### Service Management
 
 ```bash
-# Check running containers
-docker compose ps
-
-# Restart after CLAUDE.md changes (no rebuild needed)
-docker compose restart claude-botminton-bot
-
-# Rebuild after server.py / Dockerfile changes
-docker compose build bot-server && docker compose up -d bot-server
-
-# Force recreate with latest env vars
-docker compose up -d --force-recreate bot-server
+docker compose ps                            # Check container status
+docker compose restart claude-botminton-bot  # Restart after CLAUDE.md changes
+docker compose build bot-server && docker compose up -d bot-server  # Rebuild after code changes
 ```
 
 ### Claude CLI (inside container)
 
 ```bash
-# Enter the container
 docker exec -it -u botuser claude-botminton-bot /bin/bash
-
-# Test Claude CLI directly
 claude --print --dangerously-skip-permissions --no-session-persistence "Say hello"
-
-# Check Claude version
-claude --version
 ```
 
 ### Reset Claude Conversation
 
 ```bash
-# Clear conversation history for all chats (start fresh)
 docker exec claude-botminton-bot python3 -c "
 import pathlib
 pathlib.Path('/app/data/sessions.json').write_text('{}')
@@ -284,26 +228,30 @@ curl -s http://localhost:8081/groups | python3 -m json.tool
 
 ```
 claude-botminton-agent/
-├── CLAUDE.md                   # Agent instructions (Claude reads this)
-├── README.md                   # This file
-├── docker-compose.yml          # Orchestrates both services
+├── CLAUDE.md                   # Agent instructions (Claude reads this on every call)
+├── README.md
+├── docker-compose.yml
 ├── .env.example                # Template for secrets
 ├── .env                        # Your secrets (git-ignored)
-├── .gitignore
+├── botminton-start             # Start everything (Colima + proxy + Docker)
+├── botminton-stop              # Stop Docker services + proxy
+├── botminton-auth              # Authenticate Telethon personal account
+├── auth.sh                     # Called by botminton-auth
 │
 ├── gcal/                       # Google Calendar OAuth files (git-ignored)
-│   ├── credentials.json        # OAuth client credentials (you provide)
-│   └── token.json              # OAuth access token (auto-generated)
+│   ├── credentials.json
+│   └── token.json
 │
-├── bot-server/                 # Telegram bot + Claude CLI orchestrator
-│   ├── Dockerfile              # Python 3.12 + Node.js + Claude CLI
-│   ├── requirements.txt        # python-telegram-bot
-│   └── server.py               # Main server: polling + subprocess + sessions
+├── bot-server/
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   ├── server.py               # Telegram polling + Claude subprocess + DM monitor
+│   └── entrypoint.sh           # Fixes volume permissions, drops to botuser
 │
-└── telethon-sidecar/           # Personal TG account + Google Calendar service
+└── telethon-sidecar/
     ├── Dockerfile
     ├── requirements.txt
-    └── app.py                  # FastAPI + Telethon + Google Calendar API
+    └── app.py                  # FastAPI + Telethon + Google Calendar + DM event handler
 ```
 
 ---
@@ -312,41 +260,32 @@ claude-botminton-agent/
 
 ### Bot doesn't respond
 ```bash
-docker compose logs -f claude-botminton-bot
+docker logs claude-botminton-bot -f
 ```
-- Verify `TELEGRAM_BOT_TOKEN` is correct in `.env`
-- Make sure `bot-server` container is `Up` in `docker compose ps`
+- Check `TELEGRAM_BOT_TOKEN` in `.env`
+- Verify GrabGPT proxy is running: `lsof -iTCP:9898 -sTCP:LISTEN`
 
-### "Claude CLI failed" in logs
-- Verify `ANTHROPIC_API_KEY` is set and valid
-- Check if Claude CLI is installed: `docker compose exec claude-botminton-bot claude --version`
+### Claude fails / empty output
+- Check proxy is reachable: `docker exec -u botuser claude-botminton-bot curl -s http://host.docker.internal:9898`
+- Test Claude inside container: `docker exec -it -u botuser claude-botminton-bot /bin/bash` then `claude --print --dangerously-skip-permissions "hi"`
 
 ### Telethon not authorized
 ```bash
 curl -s http://localhost:8081/health
-# If "authorized": false → redo Step 5
+# "authorized": false → run ./botminton-auth
 ```
 
 ### Google Calendar not working
 ```bash
-ls -la gcal/   # Should have credentials.json and token.json
-curl -s http://localhost:8081/calendar/auth-url  # Re-authorize if needed
-```
-
-### Start a fresh Claude conversation
-The session is tied to your Telegram chat_id. To reset:
-```bash
-docker compose exec claude-botminton-bot python3 -c "
-import json, pathlib
-p = pathlib.Path('/app/data/sessions.json')
-p.write_text('{}')
-print('Sessions cleared')
-"
+ls -la gcal/     # Should have credentials.json and token.json
+curl -s http://localhost:8081/calendar/auth-url | python3 -m json.tool
 ```
 
 ### Reset everything
 ```bash
-docker compose down -v
-docker compose up -d --build
-# Then redo Step 5 (Telethon auth) and Step 6 (Google Calendar)
+./botminton-stop
+docker compose down -v    # removes volumes too (will need to re-auth Telethon)
+docker compose build
+./botminton-start
+./botminton-auth
 ```
