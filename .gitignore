@@ -1,3 +1,5 @@
 .env
 gcal/credentials.json
 gcal/token.json
+proxy.pid
+proxy.log

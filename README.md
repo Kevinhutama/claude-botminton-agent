@@ -104,32 +104,40 @@ All subsequent commands must also be run inside `dev shell`.
 
 ---
 
-## Step 4: Start the GrabGPT Proxy (Grab Engineers Only)
+## Step 4: Add GrabGPT Proxy Token to `.env`
 
-The bot uses Claude via GrabGPT. You must run the local proxy on port 9898 **before** starting Docker:
+Add your GitLab OAuth token to `.env` (used by `botminton-start` to run the proxy):
 
 ```bash
-PORT=9898 CHUNK_EAGER=0 CHUNK_MAX_WAIT_MS=500 \
-  UPSTREAM_ORIGIN="https://public-api.grabgpt.managed.catwalk-k8s.stg-myteksi.com" \
-  npx -y git+https://oauth2:<token>@gitlab.myteksi.net/design/cc-grabgpt-proxy.git
+GRABGPT_PROXY_TOKEN=your-gitlab-oauth-token-here
 ```
-
-Keep this running in a separate terminal. The Docker container connects to it via `host.docker.internal:9898`.
 
 ---
 
-## Step 5: Build and Start Services
+## Step 5: Build Docker Images (first time only)
 
 ```bash
 cd ~/Workspace/botminton/claude-botminton-agent
-docker compose up -d --build
+docker compose build
 ```
 
 First build takes ~5 minutes (installs Node.js, Claude CLI, Python deps).
 
-Verify both containers are running:
+---
+
+## Step 5b: Start Everything
+
 ```bash
-docker compose ps
+./botminton-start
+```
+
+This single command:
+1. Checks Colima — starts it if not running (skips if already running)
+2. Starts the GrabGPT proxy on port 9898 (skips if already running)
+3. Starts all Docker services (`docker compose up -d`)
+
+Verify:
+```bash
 docker logs claude-botminton-bot -f
 ```
 
@@ -196,14 +204,12 @@ Message your Telegram bot:
 
 ## After Laptop Restart
 
-Everything is persisted in Docker volumes. Just run:
-
 ```bash
-dev shell
-colima start
 cd ~/Workspace/botminton/claude-botminton-agent
-docker compose up -d
+./botminton-start
 ```
+
+That's it — Colima, the GrabGPT proxy, and all Docker services start automatically.
 
 ---
 

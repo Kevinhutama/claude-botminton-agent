@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# botminton-auth — authenticate your personal Telegram account with the Telethon sidecar
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# Check sidecar is running
+if ! curl -s http://localhost:8081/health &>/dev/null; then
+  echo "❌ Telethon sidecar is not running."
+  echo "   Run ./botminton-start first."
+  exit 1
+fi
+
+exec "$SCRIPT_DIR/auth.sh"

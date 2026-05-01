@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# botminton-stop — stop bot services and GrabGPT proxy
+# Colima is intentionally NOT stopped as other programs may be using it.
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ── 1. Docker Services ────────────────────────────────────────────────────────
+echo "==> Stopping Docker services..."
+docker compose down
+echo "    Services stopped ✓"
+
+# ── 2. GrabGPT Proxy ─────────────────────────────────────────────────────────
+echo "==> Stopping GrabGPT proxy..."
+PID_FILE="$SCRIPT_DIR/proxy.pid"
+
+if [ -f "$PID_FILE" ]; then
+  PID=$(cat "$PID_FILE")
+  if kill -0 "$PID" 2>/dev/null; then
+    kill "$PID"
+    echo "    Proxy (PID $PID) stopped ✓"
+  else
+    echo "    Proxy PID $PID not running"
+  fi
+  rm -f "$PID_FILE"
+else
+  # Fallback: kill by port
+  PROXY_PID=$(lsof -iTCP:9898 -sTCP:LISTEN -t 2>/dev/null)
+  if [ -n "$PROXY_PID" ]; then
+    kill "$PROXY_PID"
+    echo "    Proxy (PID $PROXY_PID) stopped ✓"
+  else
+    echo "    No proxy running on port 9898"
+  fi
+fi
+
+echo ""
+echo "✅ Botminton agent stopped."
+echo "   Note: Colima was NOT stopped (other programs may be using it)."
+echo "   To stop Colima manually: colima stop"
