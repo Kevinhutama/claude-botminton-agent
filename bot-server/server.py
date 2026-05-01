@@ -85,6 +85,10 @@ def run_claude(prompt: str) -> str:
         "ANTHROPIC_API_KEY": ANTHROPIC_API_KEY,
         "HOME": str(Path.home()),
     }
+    # Forward GrabGPT proxy URL if configured
+    base_url = os.environ.get("ANTHROPIC_BASE_URL")
+    if base_url:
+        env["ANTHROPIC_BASE_URL"] = base_url
 
     logger.info("Running claude (prompt length: %d chars)", len(prompt))
     logger.info("Claude path: %s | CWD: %s", claude_path, CLAUDE_WORKDIR)
