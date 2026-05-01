@@ -52,6 +52,9 @@ GCAL_SCOPES = ["https://www.googleapis.com/auth/calendar.events"]
 client: Optional[TelegramClient] = None
 phone_code_hash: Optional[str] = None
 
+# Queue of incoming DMs waiting to be picked up by the bot-server
+incoming_dm_queue: list[dict] = []
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -66,11 +69,38 @@ async def lifespan(app: FastAPI):
         if await client.is_user_authorized():
             me = await client.get_me()
             logger.info(f"Authenticated as: {me.first_name} ({me.phone})")
+            _register_event_handlers(client)
         else:
             logger.info("Client connected but not authenticated. Use /auth endpoints.")
     yield
     if client and client.is_connected():
         await client.disconnect()
+
+
+def _register_event_handlers(tg_client: TelegramClient):
+    """Register Telethon event handlers for incoming DMs."""
+    from telethon import events
+
+    @tg_client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
+    async def on_incoming_dm(event):
+        """Capture incoming private messages into the queue."""
+        sender = await event.get_sender()
+        sender_name = getattr(sender, "first_name", "") or ""
+        last = getattr(sender, "last_name", "") or ""
+        if last:
+            sender_name += f" {last}"
+        username = getattr(sender, "username", None)
+
+        entry = {
+            "id": event.message.id,
+            "date": event.message.date.isoformat() if event.message.date else None,
+            "sender": sender_name,
+            "sender_id": event.sender_id,
+            "sender_username": username,
+            "text": event.message.text or "",
+        }
+        incoming_dm_queue.append(entry)
+        logger.info(f"Queued incoming DM from {sender_name} (@{username}): {entry['text'][:80]}")
 
 
 app = FastAPI(
@@ -318,6 +348,19 @@ async def send_dm(req: DMRequest):
     except Exception as e:
         logger.error(f"Failed to send DM to {req.user}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send message: {e}")
+
+
+@app.get("/dm/incoming")
+async def get_incoming_dms(clear: bool = True):
+    """
+    Return all queued incoming DMs (messages sent TO you by others).
+    Clears the queue by default so messages are only returned once.
+    """
+    global incoming_dm_queue
+    messages = list(incoming_dm_queue)
+    if clear:
+        incoming_dm_queue.clear()
+    return {"count": len(messages), "messages": messages}
 
 
 @app.get("/dm/messages")

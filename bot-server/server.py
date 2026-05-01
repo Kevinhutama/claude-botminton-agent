@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import aiohttp
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import Application, ContextTypes, MessageHandler, filters
@@ -31,6 +32,8 @@ SESSIONS_FILE = "/app/data/sessions.json"
 CLAUDE_WORKDIR = "/app"
 MAX_TG_MESSAGE_LENGTH = 4096
 MAX_HISTORY_TURNS = 10  # number of past exchanges to include in context
+SIDECAR_URL = "http://telethon-sidecar:8081"
+DM_POLL_INTERVAL = 30  # seconds between incoming DM checks
 
 
 def load_sessions() -> dict:
@@ -183,6 +186,57 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text(chunk, parse_mode="Markdown")
 
 
+def get_primary_chat_id() -> str | None:
+    """Return the most recently active chat_id to send DM notifications to."""
+    sessions = load_sessions()
+    if not sessions:
+        return None
+    # Return the last key (most recently written)
+    return list(sessions.keys())[-1]
+
+
+async def poll_incoming_dms(app: Application) -> None:
+    """Background task: check for new incoming DMs every DM_POLL_INTERVAL seconds."""
+    logger.info("Starting incoming DM polling every %ds", DM_POLL_INTERVAL)
+    await asyncio.sleep(10)  # wait for sidecar to be ready
+
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{SIDECAR_URL}/dm/incoming", timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        messages = data.get("messages", [])
+                        if messages:
+                            chat_id = get_primary_chat_id()
+                            if chat_id:
+                                for msg in messages:
+                                    sender = msg.get("sender_username") or msg.get("sender") or "Unknown"
+                                    text = msg.get("text", "")
+                                    notification = (
+                                        f"📩 *Reply from @{sender}:*\n\n{text}"
+                                        if msg.get("sender_username")
+                                        else f"📩 *Reply from {sender}:*\n\n{text}"
+                                    )
+                                    await app.bot.send_message(
+                                        chat_id=chat_id,
+                                        text=notification,
+                                        parse_mode="Markdown",
+                                    )
+                                    logger.info("Forwarded DM reply from %s to chat %s", sender, chat_id)
+        except Exception as e:
+            logger.debug("DM poll error (will retry): %s", e)
+
+        await asyncio.sleep(DM_POLL_INTERVAL)
+
+
+async def post_init(app: Application) -> None:
+    """Called after PTB initialises — start background tasks here."""
+    asyncio.create_task(poll_incoming_dms(app))
+
+
 def main() -> None:
     logger.info("Starting Claude Botminton Agent...")
     Path("/app/data").mkdir(parents=True, exist_ok=True)
@@ -190,7 +244,12 @@ def main() -> None:
     claude_path = shutil.which("claude")
     logger.info("Claude CLI path: %s", claude_path)
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is polling for messages...")
