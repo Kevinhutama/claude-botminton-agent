@@ -1,0 +1,62 @@
+services:
+  # ── Bot Server ────────────────────────────────────────────
+  # Polls Telegram Bot API and routes each message to a Claude CLI session.
+  # Claude reads CLAUDE.md from its working dir (/app) for agent instructions.
+  bot-server:
+    build:
+      context: ./bot-server
+      dockerfile: Dockerfile
+    container_name: claude-botminton-bot
+    volumes:
+      # Agent instructions — Claude reads this on every invocation
+      - ./CLAUDE.md:/app/CLAUDE.md:ro
+      # Persist Telegram→Claude session ID mapping across restarts
+      - bot-sessions:/app/data
+      # Persist Claude's own conversation history across restarts
+      - claude-home:/root/.claude
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    env_file: .env
+    networks:
+      - clawnet
+    restart: unless-stopped
+    depends_on:
+      - telethon-sidecar
+
+  # ── Telethon Sidecar ─────────────────────────────────────
+  # Uses your personal Telegram account (MTProto) to read groups that
+  # block bots and to send DMs as you. REST API on port 8081.
+  telethon-sidecar:
+    build:
+      context: ./telethon-sidecar
+      dockerfile: Dockerfile
+    container_name: claude-botminton-telethon
+    volumes:
+      # Persist Telethon login session across restarts
+      - telethon-session:/app/session
+      # Google Calendar OAuth credentials (credentials.json + token.json)
+      - ./gcal:/app/gcal
+    environment:
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH}
+      - TELEGRAM_PHONE=${TELEGRAM_PHONE}
+    ports:
+      # Exposed to localhost for auth and debugging
+      - "8081:8081"
+    networks:
+      - clawnet
+    restart: unless-stopped
+
+volumes:
+  bot-sessions:
+    name: claude-botminton-sessions
+  claude-home:
+    name: claude-botminton-claude-home
+  telethon-session:
+    name: claude-botminton-telethon
+
+networks:
+  clawnet:
+    driver: bridge
+    name: claude-botminton-net
