@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# botminton — manage the Claude Botminton Agent
+# Usage: botminton <start|stop|restart|auth>
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_DIR="$(cd "$BIN_DIR/.." && pwd)"
+
+_load_env() {
+  if [ -f "$PROJECT_DIR/.env" ]; then
+    export $(grep -v '^#' "$PROJECT_DIR/.env" | xargs)
+  else
+    echo "❌ .env file not found at $PROJECT_DIR/.env"
+    exit 1
+  fi
+}
+
+cmd_start() {
+  set -e
+  _load_env
+  cd "$PROJECT_DIR"
+
+  # ── 1. Colima ──────────────────────────────────────────────────────────────
+  echo "==> Checking Colima..."
+  if colima status 2>/dev/null | grep -q "Running"; then
+    echo "    Colima already running — skipping start"
+  else
+    echo "    Starting Colima..."
+    colima start --cpu 4 --memory 4 --disk 60
+    echo "    Colima started ✓"
+  fi
+
+  # ── 2. GrabGPT Proxy ───────────────────────────────────────────────────────
+  echo "==> Checking GrabGPT proxy on port 9898..."
+  if lsof -iTCP:9898 -sTCP:LISTEN -t &>/dev/null || nc -z 127.0.0.1 9898 &>/dev/null; then
+    echo "    Proxy already running on port 9898 — skipping start"
+  else
+    if [ -z "$GRABGPT_PROXY_TOKEN" ]; then
+      echo "❌ GRABGPT_PROXY_TOKEN not set in .env — cannot start proxy"
+      exit 1
+    fi
+
+    echo "    Starting GrabGPT proxy..."
+    PROXY_LOG="$PROJECT_DIR/proxy.log"
+    PORT=9898 CHUNK_EAGER=0 CHUNK_MAX_WAIT_MS=500 \
+      UPSTREAM_ORIGIN="https://public-api.grabgpt.managed.catwalk-k8s.stg-myteksi.com" \
+      npx -y "git+https://oauth2:${GRABGPT_PROXY_TOKEN}@gitlab.myteksi.net/design/cc-grabgpt-proxy.git" \
+      > "$PROXY_LOG" 2>&1 &
+
+    echo $! > "$PROJECT_DIR/proxy.pid"
+
+    echo -n "    Waiting for proxy"
+    for i in $(seq 1 15); do
+      if lsof -iTCP:9898 -sTCP:LISTEN -t &>/dev/null || nc -z 127.0.0.1 9898 &>/dev/null; then
+        echo " ✓"
+        break
+      fi
+      echo -n "."
+      sleep 1
+    done
+
+    if ! lsof -iTCP:9898 -sTCP:LISTEN -t &>/dev/null && ! nc -z 127.0.0.1 9898 &>/dev/null; then
+      echo ""
+      echo "❌ Proxy failed to start. Check $PROXY_LOG"
+      exit 1
+    fi
+  fi
+
+  # ── 3. Docker Services ─────────────────────────────────────────────────────
+  echo "==> Starting Docker services..."
+  docker compose up -d
+  echo "    Services started ✓"
+
+  echo ""
+  echo "==> Status:"
+  docker compose ps
+  echo ""
+  echo "✅ Botminton agent is running!"
+  echo "   Telethon sidecar: http://localhost:8081/health"
+  echo "   Logs:             docker logs claude-botminton-bot -f"
+  echo ""
+  echo "   If not yet authenticated, run: botminton auth"
+}
+
+cmd_stop() {
+  cd "$PROJECT_DIR"
+
+  echo "==> Stopping Docker services..."
+  docker compose down
+  echo "    Services stopped ✓"
+
+  echo "==> Stopping GrabGPT proxy..."
+  PID_FILE="$PROJECT_DIR/proxy.pid"
+  if [ -f "$PID_FILE" ]; then
+    PID=$(cat "$PID_FILE")
+    if kill -0 "$PID" 2>/dev/null; then
+      kill "$PID"
+      echo "    Proxy (PID $PID) stopped ✓"
+    else
+      echo "    Proxy PID $PID not running"
+    fi
+    rm -f "$PID_FILE"
+  else
+    PROXY_PID=$(lsof -iTCP:9898 -sTCP:LISTEN -t 2>/dev/null)
+    if [ -n "$PROXY_PID" ]; then
+      kill "$PROXY_PID"
+      echo "    Proxy (PID $PROXY_PID) stopped ✓"
+    else
+      echo "    No proxy running on port 9898"
+    fi
+  fi
+
+  echo ""
+  echo "✅ Botminton agent stopped."
+  echo "   Note: Colima was NOT stopped. To stop it: colima stop"
+}
+
+cmd_restart() {
+  cd "$PROJECT_DIR"
+
+  echo "==> Restarting bot-server..."
+  docker compose up -d --force-recreate bot-server
+  echo "    bot-server restarted ✓"
+  echo ""
+  echo "   Logs: docker logs claude-botminton-bot -f"
+}
+
+cmd_auth() {
+  if ! curl -s http://localhost:8081/health &>/dev/null; then
+    echo "❌ Telethon sidecar is not running. Run 'botminton start' first."
+    exit 1
+  fi
+  exec "$PROJECT_DIR/auth.sh"
+}
+
+# ── Dispatch ──────────────────────────────────────────────────────────────────
+case "${1:-}" in
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  restart) cmd_restart ;;
+  auth)    cmd_auth ;;
+  *)
+    echo "Usage: botminton <start|stop|restart|auth>"
+    echo ""
+    echo "  start    — start Colima, GrabGPT proxy, and Docker services"
+    echo "  stop     — stop Docker services and GrabGPT proxy"
+    echo "  restart  — force-recreate the bot-server container"
+    echo "  auth     — authenticate your personal Telegram account"
+    exit 1
+    ;;
+esac

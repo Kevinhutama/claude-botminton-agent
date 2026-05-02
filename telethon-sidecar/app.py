@@ -8,6 +8,7 @@ Endpoints:
   POST /send                 - Send a message to a group as you
   POST /dm                   - Send a direct/private message to a user
   GET  /dm/messages          - Read recent DM messages with a specific user
+  GET  /dm/incoming          - Drain the incoming DM queue
   GET  /groups               - List your joined groups (helper to find group IDs)
   GET  /auth/status          - Check if authenticated
   POST /auth/send-code       - Start auth flow (sends code to your phone)
@@ -22,7 +23,6 @@ import os
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Optional
 from pathlib import Path
 

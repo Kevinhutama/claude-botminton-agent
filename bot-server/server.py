@@ -79,7 +79,6 @@ def run_claude(prompt: str) -> str:
         "--print",
         "--dangerously-skip-permissions",
         "--no-session-persistence",
-        "--verbose",
         prompt,
     ]
 
@@ -102,9 +101,11 @@ def run_claude(prompt: str) -> str:
     )
 
     stdout_lines = []
+    stderr_lines = []
+
     if process.stdout:
         for line in process.stdout:
-            sys.stdout.write(line)
+            sys.stdout.write(f"[claude stdout] {line}")
             sys.stdout.flush()
             stdout_lines.append(line)
 
@@ -114,7 +115,8 @@ def run_claude(prompt: str) -> str:
     if process.stderr:
         stderr_output = process.stderr.read()
         if stderr_output:
-            logger.info("Claude stderr: %s", stderr_output[:500])
+            for line in stderr_output.splitlines():
+                logger.info("[claude stderr] %s", line)
 
     logger.info("Claude exit code: %d", process.returncode)
 
@@ -154,6 +156,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_text = update.message.text.strip()
 
     logger.info("Message from chat_id=%s: %s", chat_id, user_text[:80])
+
+    if user_text.lower() == "clear":
+        sessions = load_sessions()
+        sessions.pop(chat_id, None)
+        save_sessions(sessions)
+        await update.message.reply_text("History cleared. Starting fresh! 🧹")
+        return
 
     await update.message.chat.send_action(ChatAction.TYPING)
 

@@ -155,22 +155,25 @@ Ask: "I'll DM @john_badminton about the Sat 22 Feb 7-9pm game at Clementi. Send 
 
 **Step 6b: Send the DM**
 
-Keep the message **casual and short**. Always include the post link.
+Keep the message **casual and short**. Always include the post link AND mention the specific venue and timing so the host knows exactly which session you mean (a host may run multiple sessions in the same thread).
 
 The message template:
-> Hey, is this {link_to_the_post} session still have available slot for 1 pax?
+> Hey, is the {day} {time} session at {venue} (this {link_to_the_post}) still have available slot for 1 pax?
+
+Example:
+> Hey, is the Saturday 7-9pm session at Clementi Sports Hall (https://t.me/sgbadmintontelecom/12345) still have available slot for 1 pax?
 
 ```bash
 curl -s -X POST http://telethon-sidecar:8081/dm \
   -H "Content-Type: application/json" \
-  -d '{"user": "john_badminton", "text": "Hey, is this https://t.me/sgbadmintontelecom/12345 session still have available slot for 1 pax?"}'
+  -d '{"user": "john_badminton", "text": "Hey, is the Saturday 7-9pm session at Clementi Sports Hall (https://t.me/sgbadmintontelecom/12345) still have available slot for 1 pax?"}'
 ```
 
 If only `sender_id` is available (no username):
 ```bash
 curl -s -X POST http://telethon-sidecar:8081/dm \
   -H "Content-Type: application/json" \
-  -d '{"user": "123456789", "text": "Hey, is this https://t.me/sgbadmintontelecom/12345 session still have available slot for 1 pax?"}'
+  -d '{"user": "123456789", "text": "Hey, is the Saturday 7-9pm session at Clementi Sports Hall (https://t.me/sgbadmintontelecom/12345) still have available slot for 1 pax?"}'
 ```
 
 Tell Kevin: "DM sent to @john_badminton! I'll check for their reply when you ask."
