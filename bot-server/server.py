@@ -17,7 +17,7 @@ from pathlib import Path
 import aiohttp
 from telegram import Update
 from telegram.constants import ChatAction
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,8 +67,8 @@ def build_prompt(message: str, history: list) -> str:
 
 def run_claude(prompt: str) -> str:
     """
-    Invoke the Claude CLI using the same pattern as the working bolt app.
-    Prompt is passed as a positional argument with HOME set explicitly.
+    Invoke the Claude CLI using JSON output format so we can extract cost/token
+    usage and log it alongside the response.
     """
     claude_path = shutil.which("claude")
     if not claude_path:
@@ -79,6 +79,7 @@ def run_claude(prompt: str) -> str:
         "--print",
         "--dangerously-skip-permissions",
         "--no-session-persistence",
+        "--output-format", "json",
         prompt,
     ]
 
@@ -101,7 +102,6 @@ def run_claude(prompt: str) -> str:
     )
 
     stdout_lines = []
-    stderr_lines = []
 
     if process.stdout:
         for line in process.stdout:
@@ -123,11 +123,35 @@ def run_claude(prompt: str) -> str:
     if process.returncode != 0:
         raise RuntimeError(f"Claude CLI failed: {stderr_output or 'unknown error'}")
 
-    response = "".join(stdout_lines).strip()
+    raw = "".join(stdout_lines).strip()
+    if not raw:
+        raise RuntimeError(f"Claude CLI returned empty output. stderr: {stderr_output}")
+
+    # Parse JSON output for cost/token info, fall back to raw text if needed
+    try:
+        data = json.loads(raw)
+        response = data.get("result", "")
+        cost_usd = data.get("cost_usd")
+        input_tokens = data.get("total_input_tokens")
+        output_tokens = data.get("total_output_tokens")
+        duration_ms = data.get("duration_ms")
+
+        cost_str = f"${cost_usd:.6f}" if cost_usd is not None else "n/a"
+        logger.info(
+            "Claude usage — cost: %s | in: %s tokens | out: %s tokens | duration: %sms",
+            cost_str,
+            input_tokens,
+            output_tokens,
+            duration_ms,
+        )
+    except (json.JSONDecodeError, AttributeError):
+        # Older CLI versions may not support JSON output; fall back gracefully
+        response = raw
+
     logger.info("Claude response length: %d chars", len(response))
 
     if not response:
-        raise RuntimeError(f"Claude CLI returned empty output. stderr: {stderr_output}")
+        raise RuntimeError("Claude CLI returned empty result.")
 
     return response
 
@@ -148,6 +172,52 @@ def split_message(text: str) -> list[str]:
     return parts
 
 
+async def keep_typing(chat, stop_event: asyncio.Event) -> None:
+    """Re-send the typing action every 4 seconds until stop_event is set."""
+    while not stop_event.is_set():
+        try:
+            await chat.send_action(ChatAction.TYPING)
+        except Exception:
+            pass
+        await asyncio.sleep(4)
+
+
+async def handle_doctor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Run a health check on the sidecar and report status."""
+    if not update.message:
+        return
+
+    lines = ["🩺 *Botminton Doctor*\n"]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{SIDECAR_URL}/health", timeout=aiohttp.ClientTimeout(total=5)
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    connected = data.get("connected", False)
+                    authorized = data.get("authorized", False)
+                    lines.append(f"Telethon sidecar: ✅ reachable")
+                    lines.append(f"MTProto connected: {'✅ yes' if connected else '❌ no'}")
+                    lines.append(f"Telegram account: {'✅ authorized' if authorized else '❌ not authorized — run botminton-auth'}")
+                else:
+                    lines.append(f"Telethon sidecar: ❌ returned HTTP {resp.status}")
+    except aiohttp.ClientConnectorError:
+        lines.append("Telethon sidecar: ❌ not reachable (is the container running?)")
+    except asyncio.TimeoutError:
+        lines.append("Telethon sidecar: ❌ timed out")
+    except Exception as e:
+        lines.append(f"Telethon sidecar: ❌ error — {e}")
+
+    lines.append(f"\nBot server: ✅ running")
+
+    try:
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    except Exception:
+        await update.message.reply_text("\n".join(lines))
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message or not update.message.text:
         return
@@ -164,7 +234,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("History cleared. Starting fresh! 🧹")
         return
 
-    await update.message.chat.send_action(ChatAction.TYPING)
+    stop_typing = asyncio.Event()
+    typing_task = asyncio.create_task(keep_typing(update.message.chat, stop_typing))
 
     sessions = load_sessions()
     history = sessions.get(chat_id, [])
@@ -175,16 +246,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         response_text = await loop.run_in_executor(None, run_claude, prompt)
     except RuntimeError as e:
         logger.error("Claude error: %s", e)
+        stop_typing.set()
+        typing_task.cancel()
         await update.message.reply_text(
             f"⚠️ Claude encountered an error:\n{e}\n\nPlease try again."
         )
         return
     except subprocess.TimeoutExpired:
         logger.error("Claude CLI timed out")
+        stop_typing.set()
+        typing_task.cancel()
         await update.message.reply_text(
             "⏱️ Request timed out (Claude took too long). Please try again."
         )
         return
+    finally:
+        stop_typing.set()
+        typing_task.cancel()
 
     # Persist conversation turn
     history.append({"user": user_text, "assistant": response_text})
@@ -192,7 +270,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     save_sessions(sessions)
 
     for chunk in split_message(response_text):
-        await update.message.reply_text(chunk, parse_mode="Markdown")
+        try:
+            await update.message.reply_text(chunk, parse_mode="Markdown")
+        except Exception:
+            await update.message.reply_text(chunk)
 
 
 def get_primary_chat_id() -> str | None:
@@ -274,11 +355,17 @@ async def poll_incoming_dms(app: Application) -> None:
                                         )
 
                                     for chunk in split_message(response_text):
-                                        await app.bot.send_message(
-                                            chat_id=chat_id,
-                                            text=chunk,
-                                            parse_mode="Markdown",
-                                        )
+                                        try:
+                                            await app.bot.send_message(
+                                                chat_id=chat_id,
+                                                text=chunk,
+                                                parse_mode="Markdown",
+                                            )
+                                        except Exception:
+                                            await app.bot.send_message(
+                                                chat_id=chat_id,
+                                                text=chunk,
+                                            )
                                     logger.info("Sent analysis of reply from %s to chat %s", sender, chat_id)
         except Exception as e:
             logger.debug("DM poll error (will retry): %s", e)
@@ -304,6 +391,7 @@ def main() -> None:
         .post_init(post_init)
         .build()
     )
+    app.add_handler(CommandHandler("doctor", handle_doctor))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot is polling for messages...")

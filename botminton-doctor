@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# botminton-doctor — health check for all Botminton components
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+SIDECAR="http://localhost:8081"
+OK="✅"
+FAIL="❌"
+WARN="⚠️ "
+
+echo "🩺 Botminton Doctor"
+echo "══════════════════════════════════════"
+
+# ── 1. GrabGPT Proxy ─────────────────────────────────────────────────────────
+echo ""
+echo "==> GrabGPT Proxy (port 9898)"
+if lsof -iTCP:9898 -sTCP:LISTEN -t &>/dev/null || nc -z 127.0.0.1 9898 &>/dev/null; then
+  echo "    $OK Listening on port 9898"
+else
+  echo "    $FAIL Not running — run: ./botminton-start"
+fi
+
+# ── 3. Docker containers ──────────────────────────────────────────────────────
+echo ""
+echo "==> Docker containers"
+BOT_STATUS=$(docker inspect --format '{{.State.Status}}' claude-botminton-bot 2>/dev/null)
+TELETHON_STATUS=$(docker inspect --format '{{.State.Status}}' claude-botminton-telethon 2>/dev/null)
+
+if [ "$BOT_STATUS" = "running" ]; then
+  echo "    $OK bot-server (claude-botminton-bot): running"
+else
+  STATUS_MSG="${BOT_STATUS:-not found}"
+  echo "    $FAIL bot-server (claude-botminton-bot): $STATUS_MSG"
+fi
+
+if [ "$TELETHON_STATUS" = "running" ]; then
+  echo "    $OK telethon-sidecar (claude-botminton-telethon): running"
+else
+  STATUS_MSG="${TELETHON_STATUS:-not found}"
+  echo "    $FAIL telethon-sidecar (claude-botminton-telethon): $STATUS_MSG"
+fi
+
+# ── 4. Telethon sidecar health ────────────────────────────────────────────────
+echo ""
+echo "==> Telethon sidecar (http://localhost:8081)"
+HEALTH=$(curl -s --max-time 5 "$SIDECAR/health" 2>/dev/null)
+if [ -z "$HEALTH" ]; then
+  echo "    $FAIL Not reachable — is the container running?"
+else
+  CONNECTED=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('connected') else 'no')" 2>/dev/null)
+  AUTHORIZED=$(echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); print('yes' if d.get('authorized') else 'no')" 2>/dev/null)
+
+  if [ "$CONNECTED" = "yes" ]; then
+    echo "    $OK MTProto connected"
+  else
+    echo "    $FAIL MTProto not connected"
+  fi
+
+  if [ "$AUTHORIZED" = "yes" ]; then
+    echo "    $OK Telegram account: authorized"
+  else
+    echo "    $FAIL Telegram account: not authorized — run: ./botminton-auth"
+  fi
+fi
+
+# ── Summary ───────────────────────────────────────────────────────────────────
+echo ""
+echo "══════════════════════════════════════"
+ALL_OK=true
+
+[ "$BOT_STATUS" != "running" ] && ALL_OK=false
+[ "$TELETHON_STATUS" != "running" ] && ALL_OK=false
+[ "$CONNECTED" != "yes" ] && ALL_OK=false
+[ "$AUTHORIZED" != "yes" ] && ALL_OK=false
+
+if [ "$ALL_OK" = "true" ]; then
+  echo "$OK All systems operational"
+else
+  echo "${WARN}Some checks failed — see above for details"
+fi
