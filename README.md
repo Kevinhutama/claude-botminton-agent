@@ -98,6 +98,25 @@ First build takes ~5 minutes (installs Node.js, Claude CLI, Python deps).
 
 ### Step 4: Start the Bot
 
+If Colima fails to start with a Lima/QEMU hostagent error, clean up the stale
+processes first:
+
+```bash
+colima stop --force || true
+pkill -f 'colima daemon start default' || true
+pkill -f 'limactl.*usernet.*colima' || true
+```
+
+If it still crashes, recreate Colima with the macOS `vz` backend:
+
+```bash
+which -a colima
+colima delete --force
+colima start --vm-type vz --cpu 4 --memory 4 --disk 60
+```
+
+Then start the service:
+
 ```bash
 ./botminton-start
 ```
