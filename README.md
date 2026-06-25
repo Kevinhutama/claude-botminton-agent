@@ -33,7 +33,7 @@ You message your Telegram bot → Claude finds available slots from the SG Badmi
 2. `bot-server` runs `claude --print --dangerously-skip-permissions --no-session-persistence "<prompt>"` with full conversation history injected
 3. Claude reads `CLAUDE.md` for instructions, uses its Bash tool to `curl` the Telethon sidecar
 4. Claude finds slots, DMs hosts, checks replies, adds to calendar
-5. The bot also monitors for incoming DMs every 30s — when a host replies, Claude analyzes it and notifies you automatically (and asks for PayNow if not provided)
+5. The bot also monitors for incoming DMs every 30s and forwards host replies to you automatically. If `AUTO_REPLY_TO_HOST_DMS=true`, Claude may also answer the host or ask for missing payment details.
 
 ---
 
@@ -81,7 +81,10 @@ TELEGRAM_API_HASH=a1b2c3d4e5f6g7h8i9j0k1l2m3n4
 TELEGRAM_PHONE=+628123456789
 ANTHROPIC_API_KEY=your-grabgpt-uuid-token
 GRABGPT_PROXY_TOKEN=your-gitlab-oauth-token
+AUTO_REPLY_TO_HOST_DMS=false
 ```
+
+`AUTO_REPLY_TO_HOST_DMS=false` forwards host replies to your Telegram bot without letting Claude automatically DM the host back. Set it to `true` only when you want automatic follow-up replies.
 
 ---
 
@@ -170,7 +173,7 @@ Message your Telegram bot:
 - *"Did the host reply?"*
 - *"Add it to my calendar with Gaby"*
 
-Host replies are forwarded to you automatically within 30 seconds — no need to ask.
+Host replies are forwarded to you automatically within 30 seconds. Auto-reply is off by default unless `AUTO_REPLY_TO_HOST_DMS=true`.
 
 ---
 

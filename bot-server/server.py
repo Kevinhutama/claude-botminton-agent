@@ -34,6 +34,12 @@ MAX_TG_MESSAGE_LENGTH = 4096
 MAX_HISTORY_TURNS = 10  # number of past exchanges to include in context
 SIDECAR_URL = "http://telethon-sidecar:8081"
 DM_POLL_INTERVAL = 30  # seconds between incoming DM checks
+AUTO_REPLY_TO_HOST_DMS = os.getenv("AUTO_REPLY_TO_HOST_DMS", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 
 def load_sessions() -> dict:
@@ -211,6 +217,10 @@ async def handle_doctor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         lines.append(f"Telethon sidecar: ❌ error — {e}")
 
     lines.append(f"\nBot server: ✅ running")
+    lines.append(
+        "Host DM auto-reply: "
+        f"{'✅ enabled' if AUTO_REPLY_TO_HOST_DMS else '⏸️ disabled'}"
+    )
 
     try:
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -285,6 +295,19 @@ def get_primary_chat_id() -> str | None:
     return list(sessions.keys())[-1]
 
 
+def format_host_reply_notification(msg: dict) -> str:
+    """Format an incoming host DM without triggering any automated reply."""
+    sender = msg.get("sender_username") or msg.get("sender") or "Unknown"
+    sender_display = f"@{sender}" if msg.get("sender_username") else sender
+    text = msg.get("text", "")
+
+    return (
+        f"📩 *Reply from {sender_display}:*\n\n"
+        f"{text}\n\n"
+        "_Auto-reply is disabled. Tell me what to send back if you want me to reply._"
+    )
+
+
 def analyze_host_reply(msg: dict) -> str:
     """
     Run an incoming host DM reply through Claude.
@@ -322,7 +345,11 @@ Keep your response concise and friendly."""
 
 async def poll_incoming_dms(app: Application) -> None:
     """Background task: check for new incoming DMs every DM_POLL_INTERVAL seconds."""
-    logger.info("Starting incoming DM polling every %ds", DM_POLL_INTERVAL)
+    logger.info(
+        "Starting incoming DM polling every %ds (auto-reply: %s)",
+        DM_POLL_INTERVAL,
+        "enabled" if AUTO_REPLY_TO_HOST_DMS else "disabled",
+    )
     await asyncio.sleep(10)  # wait for sidecar to be ready
 
     while True:
@@ -339,20 +366,22 @@ async def poll_incoming_dms(app: Application) -> None:
                             if chat_id:
                                 for msg in messages:
                                     sender = msg.get("sender_username") or msg.get("sender") or "Unknown"
-                                    logger.info("Analyzing host reply from %s", sender)
-                                    try:
-                                        loop = asyncio.get_running_loop()
-                                        response_text = await loop.run_in_executor(
-                                            None, analyze_host_reply, msg
+                                    if AUTO_REPLY_TO_HOST_DMS:
+                                        logger.info("Analyzing host reply from %s", sender)
+                                        try:
+                                            loop = asyncio.get_running_loop()
+                                            response_text = await loop.run_in_executor(
+                                                None, analyze_host_reply, msg
+                                            )
+                                        except Exception as e:
+                                            logger.error("Claude analysis failed: %s", e)
+                                            response_text = format_host_reply_notification(msg)
+                                    else:
+                                        logger.info(
+                                            "Forwarding host reply from %s without auto-reply",
+                                            sender,
                                         )
-                                    except Exception as e:
-                                        logger.error("Claude analysis failed: %s", e)
-                                        # Fallback: just forward the raw message
-                                        response_text = (
-                                            f"📩 *Reply from @{sender}:*\n\n{msg.get('text', '')}"
-                                            if msg.get("sender_username")
-                                            else f"📩 *Reply from {sender}:*\n\n{msg.get('text', '')}"
-                                        )
+                                        response_text = format_host_reply_notification(msg)
 
                                     for chunk in split_message(response_text):
                                         try:
@@ -366,7 +395,7 @@ async def poll_incoming_dms(app: Application) -> None:
                                                 chat_id=chat_id,
                                                 text=chunk,
                                             )
-                                    logger.info("Sent analysis of reply from %s to chat %s", sender, chat_id)
+                                    logger.info("Sent reply notification from %s to chat %s", sender, chat_id)
         except Exception as e:
             logger.debug("DM poll error (will retry): %s", e)
 

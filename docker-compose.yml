@@ -30,6 +30,7 @@ services:
       - CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
       - CLAUDE_CODE_ENABLE_TELEMETRY=0
       - CLAUDE_CODE_REMOTE=true
+      - AUTO_REPLY_TO_HOST_DMS=${AUTO_REPLY_TO_HOST_DMS:-false}
     env_file: .env
     networks:
       - clawnet
